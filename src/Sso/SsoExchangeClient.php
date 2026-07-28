@@ -17,6 +17,7 @@ final class SsoExchangeClient
     /**
      * @return array{access_token:string, token_type?:string, expires_in?:int}
      */
+    /** @return array{access_token: string, token_type: string, expires_in: int|null} */
     public function exchange(string $code): array
     {
         if ($code === '') {

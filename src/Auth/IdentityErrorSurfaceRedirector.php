@@ -35,7 +35,7 @@ final class IdentityErrorSurfaceRedirector
             'message' => $message,
             'correlation_id' => $correlationId,
             'return_url' => $this->returnUrl(),
-        ], static fn ($value): bool => $value !== null && $value !== ''));
+        ], static fn (string $value): bool => $value !== ''));
     }
 
     private function appKey(): string

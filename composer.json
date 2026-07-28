@@ -1,16 +1,23 @@
 {
   "$schema": "https://getcomposer.org/schema.json",
-  "name": "novvor/identity-sdk",
-  "description": "Novvor Identity SDK (JWT verification, JWKS client, SSO exchange client, session mapping, auth error surface).",
+  "name": "novvor/identity-laravel",
+  "description": "Official Laravel adapter for the Novvor Cloud Identity 2.0 relying-party SDK.",
   "type": "library",
   "license": "proprietary",
   "require": {
     "php": "^8.2",
-    "firebase/php-jwt": "^7.0",
     "guzzlehttp/guzzle": "^7.0",
+    "novvor/identity-sdk-php": "dev-codex/identity-sdk-2 as 2.0.0",
     "psr/simple-cache": "^3.0",
+    "illuminate/contracts": "^12.0|^13.0",
+    "illuminate/encryption": "^12.0|^13.0",
     "illuminate/http": "^12.0|^13.0",
+    "illuminate/session": "^12.0|^13.0",
     "illuminate/support": "^12.0|^13.0"
+  },
+  "require-dev": {
+    "phpstan/phpstan": "^2.1",
+    "phpunit/phpunit": "^11.5"
   },
   "autoload": {
     "psr-4": {
@@ -25,5 +32,15 @@
     }
   },
   "minimum-stability": "stable",
-  "prefer-stable": true
+  "prefer-stable": true,
+  "repositories": [
+    {
+      "type": "vcs",
+      "url": "https://github.com/Novvor/identity-sdk-php.git"
+    }
+  ],
+  "scripts": {
+    "analyse": "phpstan analyse --no-progress",
+    "test": "phpunit"
+  }
 }
