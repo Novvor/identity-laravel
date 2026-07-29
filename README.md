@@ -1,137 +1,149 @@
-# Novvor Identity SDK
+# Novvor Identity Laravel 2.0
 
-SDK oficial para integrar apps Laravel con Novvor Cloud Identity.
+Adaptador oficial de Laravel para integrar aplicaciones con Novvor Cloud
+Identity sin reconstruir OAuth/OIDC en cada producto.
 
-Incluye:
+El paquete se llama `novvor/identity-laravel`. La criptografía y el protocolo
+viven en `novvor/identity-sdk-php`; este adaptador aporta configuración,
+contenedor Laravel y una transacción de autorización cifrada y de un solo uso.
 
-- verificación JWT/JWKS;
-- cliente SSO exchange;
-- mapeo de sesión;
-- superficie estándar de errores Identity para apps externas.
+## Perfil de seguridad
 
-## Identity Error Surface
+El perfil `novvor-high-assurance-v1` exige conjuntamente:
 
-Las apps no deben renderizar páginas propias de error Identity/OIDC. Deben redirigir a la superficie oficial de Identity:
+- Authorization Code Flow;
+- PKCE S256;
+- PAR (RFC 9126);
+- JARM (`query.jwt`);
+- DPoP (RFC 9449) con clave ES256 distinta por sesión;
+- `state`, `nonce` y RFC 9207 `iss`;
+- `redirect_uri` exacta;
+- `private_key_jwt` para el cliente backend;
+- validación RS256 de ID Token y vinculación `sub` con UserInfo.
 
-```php
-use Novvor\Identity\Auth\IdentityErrorSurfaceRedirector;
+No existe degradación automática a un flujo más débil. Si Discovery no prueba
+el perfil solicitado, el inicio falla cerrado antes de redirigir al navegador.
 
-return app(IdentityErrorSurfaceRedirector::class)->redirect([
-    'code' => 'identity_provider_unreachable',
-    'message' => 'Identity no respondió durante el intercambio seguro.',
-    'correlation_id' => (string) request()->attributes->get('correlation_id', ''),
-]);
+## Instalación
+
+Durante el desarrollo de la línea 2.0, el adaptador sigue la rama Draft del SDK
+core. Antes del tag estable, el constraint se reemplazará por `^2.0`.
+
+```bash
+composer require novvor/identity-laravel:^2.0
+php artisan vendor:publish --tag=novvor-identity-config
 ```
 
-Config recomendada:
+Variables mínimas:
 
-```php
-// config/identity.php
-return [
-    'error_surface' => [
-        'identity_base_url' => env('IDENTITY_ERROR_SURFACE_BASE_URL', 'https://identity.enixconsole.test'),
-        'app_key' => env('IDENTITY_ERROR_APP_KEY', 'orbit-intelligence'),
-        'return_url' => env('IDENTITY_ERROR_RETURN_URL'),
-        'default_code' => 'identity_login_failed',
-        'default_message' => 'No se pudo completar el inicio de sesión.',
-        'path' => '/auth/identity/error',
-    ],
-];
+```dotenv
+IDENTITY_ENABLED=true
+IDENTITY_VALIDATE_ON_BOOT=true
+IDENTITY_OIDC_PROFILE=novvor-high-assurance-v1
+IDENTITY_OIDC_ISSUER=https://identity.example.com
+IDENTITY_OIDC_CLIENT_ID=my-backend
+IDENTITY_OIDC_REDIRECT_URI=https://app.example.com/auth/identity/callback
+IDENTITY_OIDC_AUTHORIZATION_ENDPOINT=https://identity.example.com/oauth/authorize
+IDENTITY_OIDC_TOKEN_ENDPOINT=https://identity.example.com/oauth/token
+IDENTITY_OIDC_JWKS_URI=https://identity.example.com/.well-known/jwks.json
+IDENTITY_OIDC_USERINFO_ENDPOINT=https://identity.example.com/oauth/userinfo
+IDENTITY_OIDC_CLIENT_AUTH_METHOD=private_key_jwt
+IDENTITY_OIDC_PRIVATE_KEY_ID=my-backend-key-2026-01
+IDENTITY_OIDC_PRIVATE_KEY="secret reference supplied by the runtime"
 ```
 
-No enviar tokens, secrets, authorization codes, OTP/MFA codes ni stack traces en `message`.
+No derive endpoints desde `APP_URL`, el `Host` del request ni concatenaciones.
+En producción, el boot gate rechaza hosts `.test`, `.local` y `localhost`.
 
----
-
-## Estado de distribución
-
-`novvor/identity-sdk` es un paquete de compatibilidad de la línea `1.x`. Debe
-consumirse desde releases taggeados y un repositorio privado. No contiene APIs
-de administración, App Ops, políticas de tenant ni secretos. La siguiente línea
-de producto separa explícitamente `identity-contracts`, `identity-sdk-php`,
-`identity-admin-sdk-php` e `identity-sdk-testing`.
-
-Configura siempre `IDENTITY_ERROR_SURFACE_BASE_URL` o `IDENTITY_OIDC_ISSUER`.
-El SDK ya no usa un host productivo por defecto.
-
-## Modelo recomendado para usarlo como "Auth0 interno"
-
-Si el objetivo es empaquetar este SDK como producto de identidad para terceros, te conviene esta separación:
-
-1. **API pública del SDK** (viene en `novvor/identity-sdk`):
-   - Verificación y parsing de JWT/JWKS.
-   - Cliente SSO para exchange de código.
-   - Mapper de sesión base.
-   - Configuración y provider de Laravel.
-   - Superficie de errores estandarizada (`IdentityErrorSurfaceRedirector`).
-
-2. **Reglas privadas de producto (en un módulo separado de cada app)**:
-   - Reglas de riesgo/antifraude.
-   - Políticas de sesión avanzadas por tenant.
-   - Auditoría legal/financiera de autenticación.
-   - Connectores de identidad adicionales (OAuth/SAML/B2B).
-
-La idea es exponer una API estable y establecida desde el SDK, y que cada aplicación
-inyecte sus restricciones desde su propio layer sin modificar el núcleo.
-
-### Extensión para apps consumidoras
-
-Implementación base sugerida:
+## Flujo Laravel recomendado
 
 ```php
-// app/Providers/IdentityOverridesServiceProvider.php
+use Illuminate\Http\Request;
+use Novvor\Identity\Oidc\IdentityAuthorizationManager;
 
-use Novvor\Identity\Auth\IdentityErrorSurfaceRedirector;
-use Novvor\Identity\Contracts\IdentitySessionMapperInterface;
-use Novvor\Identity\Contracts\IdentityTokenValidationPolicyInterface;
-use Novvor\Identity\Session\IdentitySessionMapper;
-use Novvor\Identity\Jwt\IdentityTokenValidationPolicy;
-use Novvor\Identity\YourTenantNamespace\Auth\TenantIdentitySessionMapper;
-use Novvor\Identity\YourTenantNamespace\Auth\TenantIdentityTokenPolicy;
-
-class IdentityOverridesServiceProvider extends ServiceProvider
+final class IdentityLoginController
 {
-    public function register(): void
+    public function redirect(Request $request, IdentityAuthorizationManager $identity)
     {
-        $this->app->bind(IdentitySessionMapperInterface::class, TenantIdentitySessionMapper::class);
-        $this->app->bind(IdentityTokenValidationPolicyInterface::class, TenantIdentityTokenPolicy::class);
+        $url = $identity->begin(
+            $request->session(),
+            (string) $request->attributes->get('correlation_id'),
+        );
 
-        $this->app->bind(IdentityErrorSurfaceRedirector::class, function () {
-            return new IdentityErrorSurfaceRedirector();
-        });
+        return redirect()->away($url);
+    }
+
+    public function callback(Request $request, IdentityAuthorizationManager $identity)
+    {
+        $result = $identity->complete(
+            $request->session(),
+            $request->query(),
+            (string) $request->attributes->get('correlation_id'),
+        );
+
+        $request->session()->regenerate();
+
+        // Mapear subject, tenant y roles mediante una política de la aplicación.
+        // Nunca guardar access/id/refresh tokens completos en logs.
+        return redirect()->intended('/manage');
     }
 }
 ```
 
-Alternativamente, también puede configurarse por `config/identity.php` sin ServiceProvider extra:
+`IdentityAuthorizationManager`:
 
-```php
-return [
-    'token_validation_policy' => TenantIdentityTokenPolicy::class,
-    'session_mapper' => TenantIdentitySessionMapper::class,
-];
-```
+- mantiene hasta cinco inicios concurrentes para pestañas distintas;
+- cifra `state`, `nonce`, PKCE verifier y clave privada DPoP con el encrypter
+  de Laravel;
+- limita las transacciones a diez minutos;
+- consume la transacción antes del intercambio para impedir replay;
+- compara Discovery con los endpoints configurados;
+- usa PAR antes de exponer la URL al navegador;
+- exige JARM en high assurance;
+- valida ID Token y UserInfo antes de devolver identidad.
 
-Qué hace cada contrato:
+La aplicación consumidora sigue siendo responsable de autorización, tenant
+binding, role mapping, creación de sesión y logout local.
 
-- `IdentityTokenValidationPolicyInterface`
-  - Valida claims y metadatos del JWT.
-  - Útil para reglas de tenant, risk-score, claims personalizados o cambios de issuer/aud.
-- `IdentitySessionMapperInterface`
-  - Define cómo se transforma el payload del token en sesión de aplicación.
-  - Útil para mapear campos corporativos, claims anidados o metadatos de autorización por app.
+## Refresh, revocación e introspección
 
-No toques el SDK para cambiar reglas de producto por cliente.
+El contenedor expone:
 
-### Recomendación operativa para repositorios
+- `RefreshTokenClient`;
+- `TokenRevocationClient`;
+- `TokenIntrospectionClient`;
+- `UserInfoClient`;
+- `IdTokenValidator`.
 
-- Mantener los SDKs de Novvor **privados** mientras se estabilizan contratos,
-  distribución Composer y governance de seguridad.
-- Mantener lógica sensible en capas privadas; la superficie cliente nunca
-  incluye operaciones administrativas, soporte o App Ops.
+El refresh client rechaza respuestas que no roten el refresh token. Los tokens
+son credenciales: no deben persistirse en logs, excepciones, telemetry ni URLs.
 
-### Señal de que ya está listo como producto
+## DPoP nonce
 
-- El SDK no depende de código del tenant específico.
-- Los consumidores pueden integrarlo sin tocar nada más que config + eventos/mapeos.
-- Las mejoras de identidad del negocio se entregan en módulos/servicios externos del ecosistema.
+El core acepta un nonce explícito para token y UserInfo. El reintento automático
+ante `use_dpop_nonce` queda deshabilitado hasta que Identity publique y pruebe
+esa capacidad; el SDK no anuncia una protección que el servidor aún no demuestra.
+
+## Superficie de errores
+
+`IdentityErrorSurfaceRedirector` permite delegar mensajes sanitizados a Identity.
+Nunca incluir tokens, secrets, authorization codes, OTP/MFA, cookies o stack
+traces en el mensaje.
+
+## Paquetes de la familia
+
+| Paquete | Responsabilidad |
+|---|---|
+| `novvor/identity-contracts` | Claims y perfiles estables, sin transporte |
+| `novvor/identity-sdk-php` | OAuth/OIDC core independiente del framework |
+| `novvor/identity-laravel` | Integración oficial para Laravel |
+| `novvor/identity-admin-sdk-php` | Control administrativo privilegiado |
+| `novvor/identity-sdk-testing` | Fakes y fixtures públicos sin secretos |
+
+Las operaciones administrativas no pertenecen al SDK de relying party.
+
+## Estado
+
+Identity 2.0 está en Draft. Los gates locales prueban el contrato, pero no
+equivalen a conformidad OpenID, staging ni producción. Consulte
+`COMPATIBILITY.md`, `SECURITY.md` y `UPGRADING.md`.

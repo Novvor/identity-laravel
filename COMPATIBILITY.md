@@ -1,11 +1,16 @@
 # Compatibility
 
-| Consumer | Supported SDK line | Distribution |
-| --- | --- | --- |
-| Enix Platform | `^1.1` during migration | Private Composer VCS release |
-| ORBIT | `^1.1` during migration | Private Composer VCS release |
-| Central | `^1.1` during migration | Private Composer VCS release |
+| Component | Supported |
+|---|---|
+| PHP | 8.2–8.5 |
+| Laravel | 12–13 |
+| Identity core | 2.x |
+| OAuth | Authorization Code, refresh, introspection, revocation |
+| OIDC | Discovery, RFC 9207, ID Token, UserInfo |
+| High assurance | PKCE S256, PAR, JARM RS256, DPoP ES256, private_key_jwt |
 
-Identity Server does not use this relying-party SDK in runtime. Shared wire
-contracts belong in `novvor/identity-contracts`; privileged server management
-belongs in `novvor/identity-admin-sdk-php`.
+`novvor/identity-laravel` 2.x is a breaking replacement for the legacy package
+formerly distributed as `novvor/identity-sdk` 1.x.
+
+Automatic DPoP nonce challenge retries, OpenID certification, SAML and SCIM are
+not claimed by this package.

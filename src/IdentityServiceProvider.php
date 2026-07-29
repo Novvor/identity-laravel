@@ -9,8 +9,22 @@ use Novvor\Identity\Contracts\IdentitySessionMapperInterface;
 use Novvor\Identity\Contracts\IdentityTokenValidationPolicyInterface;
 use Novvor\Identity\Jwt\IdentityTokenValidationPolicy;
 use Novvor\Identity\Jwt\JwtVerifier;
+use Novvor\Identity\Oidc\IdentityAuthorizationManager;
 use Novvor\Identity\Session\IdentitySessionMapper;
 use Novvor\Identity\Sso\SsoExchangeClient;
+use Novvor\IdentitySdk\Oidc\AuthorizationCodeClient;
+use Novvor\IdentitySdk\Oidc\AuthorizationRequestFactory;
+use Novvor\IdentitySdk\Oidc\AuthorizationResponseProcessor;
+use Novvor\IdentitySdk\Oidc\EnterpriseProfileValidator;
+use Novvor\IdentitySdk\Oidc\IdTokenValidator;
+use Novvor\IdentitySdk\Oidc\JarmAuthorizationResponseValidator;
+use Novvor\IdentitySdk\Oidc\OidcClientConfiguration;
+use Novvor\IdentitySdk\Oidc\OidcDiscoveryClient;
+use Novvor\IdentitySdk\Oidc\PushedAuthorizationClient;
+use Novvor\IdentitySdk\Oidc\RefreshTokenClient;
+use Novvor\IdentitySdk\Oidc\TokenIntrospectionClient;
+use Novvor\IdentitySdk\Oidc\TokenRevocationClient;
+use Novvor\IdentitySdk\Oidc\UserInfoClient;
 use Psr\SimpleCache\CacheInterface;
 
 final class IdentityServiceProvider extends ServiceProvider
@@ -34,8 +48,41 @@ final class IdentityServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton(Client::class, function (): Client {
-            return new Client();
+            return new Client([
+                'allow_redirects' => false,
+                'http_errors' => false,
+            ]);
         });
+
+        $this->app->singleton(OidcClientConfiguration::class, function (): OidcClientConfiguration {
+            return (new OidcConfigurationFactory())->fromArray((array) config('identity.oidc', []));
+        });
+        $this->app->singleton(OidcDiscoveryClient::class, fn ($app): OidcDiscoveryClient => new OidcDiscoveryClient($app->make(Client::class)));
+        $this->app->singleton(AuthorizationRequestFactory::class);
+        $this->app->singleton(PushedAuthorizationClient::class, fn ($app): PushedAuthorizationClient => new PushedAuthorizationClient($app->make(Client::class)));
+        $this->app->singleton(JarmAuthorizationResponseValidator::class, fn ($app): JarmAuthorizationResponseValidator => new JarmAuthorizationResponseValidator($app->make(Client::class)));
+        $this->app->singleton(AuthorizationResponseProcessor::class, fn ($app): AuthorizationResponseProcessor => new AuthorizationResponseProcessor($app->make(JarmAuthorizationResponseValidator::class)));
+        $this->app->singleton(AuthorizationCodeClient::class, fn ($app): AuthorizationCodeClient => new AuthorizationCodeClient($app->make(Client::class)));
+        $this->app->singleton(RefreshTokenClient::class, fn ($app): RefreshTokenClient => new RefreshTokenClient($app->make(Client::class)));
+        $this->app->singleton(UserInfoClient::class, fn ($app): UserInfoClient => new UserInfoClient($app->make(Client::class)));
+        $this->app->singleton(TokenIntrospectionClient::class, fn ($app): TokenIntrospectionClient => new TokenIntrospectionClient($app->make(Client::class)));
+        $this->app->singleton(TokenRevocationClient::class, fn ($app): TokenRevocationClient => new TokenRevocationClient($app->make(Client::class)));
+        $this->app->singleton(IdTokenValidator::class, fn ($app): IdTokenValidator => new IdTokenValidator($app->make(Client::class)));
+        $this->app->singleton(EnterpriseProfileValidator::class);
+        $this->app->singleton(IdentityAuthorizationManager::class, fn ($app): IdentityAuthorizationManager => new IdentityAuthorizationManager(
+            configuration: $app->make(OidcClientConfiguration::class),
+            discoveryClient: $app->make(OidcDiscoveryClient::class),
+            profileValidator: $app->make(EnterpriseProfileValidator::class),
+            requests: $app->make(AuthorizationRequestFactory::class),
+            par: $app->make(PushedAuthorizationClient::class),
+            responses: $app->make(AuthorizationResponseProcessor::class),
+            codes: $app->make(AuthorizationCodeClient::class),
+            idTokens: $app->make(IdTokenValidator::class),
+            userInfo: $app->make(UserInfoClient::class),
+            encrypter: $app->make('encrypter'),
+            transactionTtlSeconds: (int) config('identity.oidc.transaction_ttl_seconds', 600),
+            maxPendingTransactions: (int) config('identity.oidc.max_pending_transactions', 5),
+        ));
 
         $this->app->singleton(JwtVerifier::class, function ($app): JwtVerifier {
             $cache = null;
@@ -79,6 +126,13 @@ final class IdentityServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if ((bool) config('identity.enabled', true)
+            && (bool) config('identity.validate_on_boot', true)
+            && $this->app->environment('production')) {
+            $configuration = $this->app->make(OidcClientConfiguration::class);
+            (new OidcConfigurationFactory())->assertProductionSafe($configuration);
+        }
+
         if ($this->app->runningInConsole()) {
             $this->publishes([
                 __DIR__.'/../config/identity.php' => config_path('identity.php'),
