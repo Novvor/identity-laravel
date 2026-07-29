@@ -3,11 +3,11 @@
   "name": "novvor/identity-laravel",
   "description": "Official Laravel adapter for the Novvor Cloud Identity 2.0 relying-party SDK.",
   "type": "library",
-    "license": "Apache-2.0",
+  "license": "Apache-2.0",
   "require": {
     "php": "^8.2",
     "guzzlehttp/guzzle": "^7.0",
-    "novvor/identity-sdk-php": "dev-codex/identity-sdk-2 as 2.0.0",
+    "novvor/identity-sdk-php": "^2.0",
     "psr/simple-cache": "^3.0",
     "illuminate/contracts": "^12.0|^13.0",
     "illuminate/encryption": "^12.0|^13.0",
@@ -33,12 +33,6 @@
   },
   "minimum-stability": "stable",
   "prefer-stable": true,
-  "repositories": [
-    {
-      "type": "vcs",
-      "url": "https://github.com/Novvor/identity-sdk-php.git"
-    }
-  ],
   "scripts": {
     "analyse": "phpstan analyse --no-progress",
     "test": "phpunit"
