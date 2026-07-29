@@ -26,8 +26,9 @@ el perfil solicitado, el inicio falla cerrado antes de redirigir al navegador.
 
 ## Instalación
 
-Durante el desarrollo de la línea 2.0, el adaptador sigue la rama Draft del SDK
-core. Antes del tag estable, el constraint se reemplazará por `^2.0`.
+La línea estable 2.x se instala íntegramente desde Packagist y consume el SDK
+core mediante el constraint estable `^2.0`. No requiere repositorios VCS,
+tokens de GitHub ni ramas de desarrollo.
 
 ```bash
 composer require novvor/identity-laravel:^2.0
@@ -120,9 +121,10 @@ son credenciales: no deben persistirse en logs, excepciones, telemetry ni URLs.
 
 ## DPoP nonce
 
-El core acepta un nonce explícito para token y UserInfo. El reintento automático
-ante `use_dpop_nonce` queda deshabilitado hasta que Identity publique y pruebe
-esa capacidad; el SDK no anuncia una protección que el servidor aún no demuestra.
+El core acepta un nonce explícito para token y UserInfo. Ante
+`use_dpop_nonce`, reintenta exactamente una vez con el nonce emitido por el
+servidor en el intercambio de código, refresh y UserInfo. Una respuesta
+malformada o un segundo desafío falla cerrado.
 
 ## Superficie de errores
 
@@ -144,6 +146,7 @@ Las operaciones administrativas no pertenecen al SDK de relying party.
 
 ## Estado
 
-Identity 2.0 está en Draft. Los gates locales prueban el contrato, pero no
-equivalen a conformidad OpenID, staging ni producción. Consulte
+Identity SDK 2.0 y este adaptador tienen releases estables para integración. Los
+gates del paquete prueban el contrato local, pero no equivalen a certificación
+OpenID, staging ni readiness productiva del servidor Identity. Consulte
 `COMPATIBILITY.md`, `SECURITY.md` y `UPGRADING.md`.
