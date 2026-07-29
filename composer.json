@@ -3,7 +3,7 @@
   "name": "novvor/identity-laravel",
   "description": "Official Laravel adapter for the Novvor Cloud Identity 2.0 relying-party SDK.",
   "type": "library",
-  "license": "proprietary",
+    "license": "Apache-2.0",
   "require": {
     "php": "^8.2",
     "guzzlehttp/guzzle": "^7.0",
