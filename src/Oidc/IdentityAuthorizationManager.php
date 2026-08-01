@@ -2,15 +2,15 @@
 
 namespace Novvor\Identity\Oidc;
 
-use Illuminate\Contracts\Encryption\Encrypter;
 use Illuminate\Contracts\Session\Session;
 use Novvor\IdentitySdk\Oidc\AuthorizationCodeClient;
 use Novvor\IdentitySdk\Oidc\AuthorizationRequestFactory;
 use Novvor\IdentitySdk\Oidc\AuthorizationResponseProcessor;
-use Novvor\IdentitySdk\Oidc\AuthorizationTransaction;
 use Novvor\IdentitySdk\Oidc\DpopKey;
 use Novvor\IdentitySdk\Oidc\EnterpriseProfileValidator;
 use Novvor\IdentitySdk\Oidc\IdTokenValidator;
+use Novvor\IdentitySdk\Oidc\LoginIntentManager;
+use Novvor\IdentitySdk\Oidc\LoginIntentStore;
 use Novvor\IdentitySdk\Oidc\OidcClientConfiguration;
 use Novvor\IdentitySdk\Oidc\OidcDiscoveryClient;
 use Novvor\IdentitySdk\Oidc\OidcDiscoveryDocument;
@@ -19,9 +19,18 @@ use Novvor\IdentitySdk\Oidc\PushedAuthorizationClient;
 use Novvor\IdentitySdk\Oidc\UserInfoClient;
 use Throwable;
 
+/**
+ * Browser-session OIDC coordinator.
+ *
+ * Authentication state is durable and shared-cache backed. The session carries
+ * only opaque handles, so PKCE verifiers, nonces and DPoP private keys cannot
+ * be replayed from a browser session payload or a different application node.
+ */
 final class IdentityAuthorizationManager
 {
-    private const SESSION_KEY = '_novvor_identity_oidc_transactions_v2';
+    private const SESSION_KEY = '_novvor_identity_oidc_intent_handles_v25';
+
+    private const LEGACY_SESSION_KEY = '_novvor_identity_oidc_transactions_v2';
 
     public function __construct(
         private readonly OidcClientConfiguration $configuration,
@@ -33,14 +42,12 @@ final class IdentityAuthorizationManager
         private readonly AuthorizationCodeClient $codes,
         private readonly IdTokenValidator $idTokens,
         private readonly UserInfoClient $userInfo,
-        private readonly Encrypter $encrypter,
-        private readonly int $transactionTtlSeconds = 600,
+        private readonly LoginIntentManager $intents,
+        private readonly LoginIntentStore $intentStore,
+        private readonly LaravelDpopIntentMaterialStore $dpopMaterials,
         private readonly int $maxPendingTransactions = 5,
     ) {
-        if ($transactionTtlSeconds < 60 || $transactionTtlSeconds > 900) {
-            throw new OidcException('OIDC transaction TTL must be between 60 and 900 seconds.');
-        }
-        if ($maxPendingTransactions < 1 || $maxPendingTransactions > 10) {
+        if ($this->maxPendingTransactions < 1 || $this->maxPendingTransactions > 10) {
             throw new OidcException('Pending OIDC transactions must be between one and ten.');
         }
     }
@@ -50,26 +57,49 @@ final class IdentityAuthorizationManager
         ?string $correlationId = null,
         ?string $requiredAcr = null,
         ?int $maxAge = null,
+        string $returnPath = '/',
     ): string {
+        $correlationId ??= bin2hex(random_bytes(16));
         $discovery = $this->verifiedDiscovery($correlationId);
         $transaction = $this->requests->transaction($this->configuration, $requiredAcr, $maxAge);
         $dpopKey = $this->configuration->profile === 'novvor-high-assurance-v1'
             ? DpopKey::generateEs256()
             : null;
 
-        $this->store($session, $transaction, $dpopKey);
-
-        if ($this->configuration->profile === 'novvor-high-assurance-v1') {
-            $endpoint = $discovery->pushedAuthorizationRequestEndpoint;
-            if ($endpoint === null) {
-                throw new OidcException('High-assurance authorization requires a discovered PAR endpoint.');
-            }
-            $pushed = $this->par->push($this->configuration, $transaction, $endpoint, $correlationId);
-
-            return $this->requests->pushedAuthorizationUrl($this->configuration, $pushed->requestUri);
+        // Existing v2 records contain sensitive state in browser storage. They
+        // cannot be safely migrated, so a new login is deliberately required.
+        $session->forget(self::LEGACY_SESSION_KEY);
+        $intent = $this->intents->begin(
+            $transaction,
+            $returnPath,
+            $this->browserBinding($session),
+            $correlationId,
+        );
+        foreach ($this->storeHandle($session, $intent->handle) as $evictedHandle) {
+            $this->discard($session, $evictedHandle);
         }
 
-        return $this->configuration->authorizationEndpoint.'?'.http_build_query($transaction->parameters);
+        try {
+            if ($dpopKey !== null) {
+                $this->dpopMaterials->put($intent->handle, $dpopKey, $intent->expiresAt);
+            }
+
+            if ($this->configuration->profile === 'novvor-high-assurance-v1') {
+                $endpoint = $discovery->pushedAuthorizationRequestEndpoint;
+                if ($endpoint === null) {
+                    throw new OidcException('High-assurance authorization requires a discovered PAR endpoint.');
+                }
+                $pushed = $this->par->push($this->configuration, $transaction, $endpoint, $correlationId);
+
+                return $this->requests->pushedAuthorizationUrl($this->configuration, $pushed->requestUri);
+            }
+
+            return $this->configuration->authorizationEndpoint.'?'.http_build_query($transaction->parameters);
+        } catch (Throwable $exception) {
+            $this->discard($session, $intent->handle);
+
+            throw $exception;
+        }
     }
 
     /**
@@ -80,45 +110,63 @@ final class IdentityAuthorizationManager
         array $parameters,
         ?string $correlationId = null,
     ): IdentityAuthorizationResult {
-        $records = $this->records($session);
-        $matchedIndex = null;
+        $matchedHandle = null;
+        $candidate = null;
         $authorization = null;
-        $record = null;
 
-        foreach ($records as $index => $candidate) {
+        foreach ($this->handles($session) as $handle) {
+            $intent = $this->intentStore->get($handle);
+            if ($intent === null) {
+                $this->removeHandle($session, $handle);
+
+                continue;
+            }
             try {
                 $processed = $this->responses->process(
                     $this->configuration,
                     $parameters,
-                    $candidate['transaction']['state'],
-                    $correlationId,
+                    $intent->state,
+                    $correlationId ?? $intent->correlationId,
                 );
             } catch (Throwable) {
                 continue;
             }
-            $matchedIndex = $index;
+            $matchedHandle = $handle;
+            $candidate = $intent;
             $authorization = $processed;
-            $record = $candidate;
             break;
         }
 
-        if ($matchedIndex === null || $authorization === null || $record === null) {
+        if ($matchedHandle === null || $candidate === null || $authorization === null) {
             throw new OidcException('Authorization response does not match an active one-time transaction.');
         }
 
-        unset($records[$matchedIndex]);
-        $this->writeRecords($session, array_values($records));
-
+        try {
+            $intent = $this->intents->consume($matchedHandle, $this->browserBinding($session));
+        } finally {
+            // The state matched a local intent. Never leave that browser handle
+            // behind even if the durable consume rejects it as stale or replayed.
+            $this->removeHandle($session, $matchedHandle);
+        }
         if ($authorization->error !== null || $authorization->code === null) {
+            $this->dpopMaterials->forget($intent->handle);
+
             throw new OidcException('Authorization server rejected the login request.');
         }
 
-        $dpopKey = $this->restoreDpopKey($record['dpop_key'] ?? null);
+        $dpopKey = $this->configuration->profile === 'novvor-high-assurance-v1'
+            ? $this->dpopMaterials->consume($intent->handle)
+            : null;
+        if ($this->configuration->profile === 'novvor-high-assurance-v1' && $dpopKey === null) {
+            throw new OidcException('Stored DPoP transaction material is unavailable.');
+        }
+
+        $effectiveCorrelationId = $correlationId ?? $intent->correlationId;
         $tokens = $this->codes->exchange(
             $this->configuration,
             $authorization->code,
-            $record['transaction']['code_verifier'],
-            $correlationId,
+            $intent->codeVerifier,
+            $effectiveCorrelationId,
             $dpopKey,
         );
         if ($tokens->idToken === null) {
@@ -128,10 +176,10 @@ final class IdentityAuthorizationManager
         $claims = $this->idTokens->validate(
             $this->configuration,
             $tokens->idToken,
-            $record['transaction']['nonce'],
-            $correlationId,
+            $intent->nonce,
+            $effectiveCorrelationId,
         );
-        $subject = is_string($claims['sub'] ?? null) ? $claims['sub'] : '';
+        $subject = $claims['sub'] ?? '';
         $userInfo = $this->configuration->userinfoEndpoint === null
             ? null
             : $this->userInfo->fetch(
@@ -139,7 +187,7 @@ final class IdentityAuthorizationManager
                 $tokens->accessToken,
                 $tokens->tokenType,
                 $subject,
-                $correlationId,
+                $effectiveCorrelationId,
                 $dpopKey,
             );
 
@@ -167,80 +215,66 @@ final class IdentityAuthorizationManager
         return $discovery;
     }
 
-    private function store(Session $session, AuthorizationTransaction $transaction, ?DpopKey $dpopKey): void
+    private function browserBinding(Session $session): string
     {
-        $records = $this->records($session);
-        $records[] = [
-            'created_at' => time(),
-            'transaction' => $transaction->toArray(),
-            'dpop_key' => $dpopKey === null ? null : [
-                'private_key' => $dpopKey->privateKey,
-                'public_jwk' => $dpopKey->publicJwk,
-                'algorithm' => $dpopKey->algorithm,
-            ],
-        ];
-        $this->writeRecords($session, array_slice($records, -$this->maxPendingTransactions));
+        $sessionId = $session->getId();
+        if ($sessionId === '') {
+            throw new OidcException('OIDC authorization requires an initialized browser session.');
+        }
+
+        return $sessionId;
     }
 
     /**
-     * @return list<array<string, mixed>>
+     * @return list<string>
      */
-    private function records(Session $session): array
+    private function handles(Session $session): array
     {
-        $encrypted = $session->get(self::SESSION_KEY);
-        if (! is_string($encrypted) || $encrypted === '') {
-            return [];
-        }
-        try {
-            $records = $this->encrypter->decrypt($encrypted);
-        } catch (Throwable) {
+        $handles = $session->get(self::SESSION_KEY, []);
+        if (! is_array($handles)) {
             $session->forget(self::SESSION_KEY);
 
             return [];
         }
-        if (! is_array($records)) {
-            return [];
-        }
 
-        return array_values(array_filter($records, fn (mixed $record): bool => $this->validRecord($record)));
-    }
-
-    private function validRecord(mixed $record): bool
-    {
-        return is_array($record)
-            && is_int($record['created_at'] ?? null)
-            && $record['created_at'] >= time() - $this->transactionTtlSeconds
-            && is_array($record['transaction'] ?? null)
-            && is_string($record['transaction']['state'] ?? null)
-            && is_string($record['transaction']['nonce'] ?? null)
-            && is_string($record['transaction']['code_verifier'] ?? null);
+        return array_values(array_filter($handles, static fn (mixed $handle): bool => is_string($handle)
+            && preg_match('/^[A-Za-z0-9_-]{43,128}$/', $handle) === 1));
     }
 
     /**
-     * @param list<array<string, mixed>> $records
+     * @return list<string> Handles evicted from the browser's bounded pending-intent list.
      */
-    private function writeRecords(Session $session, array $records): void
+    private function storeHandle(Session $session, string $handle): array
     {
-        if ($records === []) {
+        $handles = array_values(array_unique([...$this->handles($session), $handle]));
+        $evicted = array_slice($handles, 0, max(0, count($handles) - $this->maxPendingTransactions));
+        $session->put(self::SESSION_KEY, array_slice($handles, -$this->maxPendingTransactions));
+
+        return $evicted;
+    }
+
+    private function removeHandle(Session $session, string $handle): void
+    {
+        $handles = array_values(array_filter(
+            $this->handles($session),
+            static fn (string $candidate): bool => ! hash_equals($candidate, $handle),
+        ));
+        if ($handles === []) {
             $session->forget(self::SESSION_KEY);
 
             return;
         }
-        $session->put(self::SESSION_KEY, $this->encrypter->encrypt($records));
+        $session->put(self::SESSION_KEY, $handles);
     }
 
-    private function restoreDpopKey(mixed $payload): ?DpopKey
+    private function discard(Session $session, string $handle): void
     {
-        if ($payload === null) {
-            return null;
+        try {
+            $this->intents->consume($handle, $this->browserBinding($session));
+        } catch (Throwable) {
+            // The original exception is the only safe signal for callers.
         }
-        if (! is_array($payload)
-            || ! is_string($payload['private_key'] ?? null)
-            || ! is_array($payload['public_jwk'] ?? null)
-            || ! is_string($payload['algorithm'] ?? null)) {
-            throw new OidcException('Stored DPoP transaction material is invalid.');
-        }
-
-        return new DpopKey($payload['private_key'], $payload['public_jwk'], $payload['algorithm']);
+        $this->dpopMaterials->forget($handle);
+        $this->removeHandle($session, $handle);
     }
 }

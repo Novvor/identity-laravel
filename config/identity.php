@@ -43,6 +43,10 @@ return [
         'jwks_cache_ttl_seconds' => (int) env('IDENTITY_OIDC_JWKS_CACHE_TTL', 300),
         'transaction_ttl_seconds' => (int) env('IDENTITY_OIDC_TRANSACTION_TTL', 600),
         'max_pending_transactions' => (int) env('IDENTITY_OIDC_MAX_PENDING_TRANSACTIONS', 5),
+        // Authorization intent material is server-side only. Production must bind this
+        // explicitly to a shared, lock-capable cache store (typically Redis).
+        'intent_cache_store' => env('IDENTITY_OIDC_INTENT_CACHE_STORE'),
+        'intent_lock_seconds' => (int) env('IDENTITY_OIDC_INTENT_LOCK_SECONDS', 5),
     ],
 
     'token_validation_policy' => Novvor\Identity\Jwt\IdentityTokenValidationPolicy::class,

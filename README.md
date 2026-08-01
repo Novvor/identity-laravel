@@ -1,11 +1,11 @@
-# Novvor Identity Laravel 2.0
+# Novvor Identity Laravel
 
 Adaptador oficial de Laravel para integrar aplicaciones con Novvor Cloud
 Identity sin reconstruir OAuth/OIDC en cada producto.
 
 El paquete se llama `novvor/identity-laravel`. La criptografía y el protocolo
 viven en `novvor/identity-sdk-php`; este adaptador aporta configuración,
-contenedor Laravel y una transacción de autorización cifrada y de un solo uso.
+contenedor Laravel y una transacción de autorización de un solo uso.
 
 ## Perfil de seguridad
 
@@ -26,12 +26,12 @@ el perfil solicitado, el inicio falla cerrado antes de redirigir al navegador.
 
 ## Instalación
 
-La línea estable 2.x se instala íntegramente desde Packagist y consume el SDK
-core mediante el constraint estable `^2.0`. No requiere repositorios VCS,
-tokens de GitHub ni ramas de desarrollo.
+La línea 2.5 se instalará íntegramente desde Packagist una vez que el núcleo
+`novvor/identity-sdk-php:^2.5` tenga una etiqueta estable. No requiere
+repositorios VCS, tokens de GitHub ni ramas de desarrollo.
 
 ```bash
-composer require novvor/identity-laravel:^2.0
+composer require novvor/identity-laravel:^2.5 novvor/identity-sdk-php:^2.5
 php artisan vendor:publish --tag=novvor-identity-config
 ```
 
@@ -51,6 +51,8 @@ IDENTITY_OIDC_USERINFO_ENDPOINT=https://identity.example.com/oauth/userinfo
 IDENTITY_OIDC_CLIENT_AUTH_METHOD=private_key_jwt
 IDENTITY_OIDC_PRIVATE_KEY_ID=my-backend-key-2026-01
 IDENTITY_OIDC_PRIVATE_KEY="secret reference supplied by the runtime"
+IDENTITY_OIDC_INTENT_CACHE_STORE=redis
+IDENTITY_OIDC_INTENT_LOCK_SECONDS=5
 ```
 
 No derive endpoints desde `APP_URL`, el `Host` del request ni concatenaciones.
@@ -94,8 +96,12 @@ final class IdentityLoginController
 `IdentityAuthorizationManager`:
 
 - mantiene hasta cinco inicios concurrentes para pestañas distintas;
-- cifra `state`, `nonce`, PKCE verifier y clave privada DPoP con el encrypter
-  de Laravel;
+- conserva en la sesión del navegador únicamente handles opacos sin secretos;
+- conserva `state`, `nonce`, PKCE verifier, return path y material privado
+  DPoP cifrados del lado servidor;
+- exige un cache compartido con locks atómicos para consumir cada intención una
+  sola vez; en producción debe ser el store configurado para
+  `IDENTITY_OIDC_INTENT_CACHE_STORE`;
 - limita las transacciones a diez minutos;
 - consume la transacción antes del intercambio para impedir replay;
 - compara Discovery con los endpoints configurados;
@@ -105,6 +111,20 @@ final class IdentityLoginController
 
 La aplicación consumidora sigue siendo responsable de autorización, tenant
 binding, role mapping, creación de sesión y logout local.
+
+## Intenciones de inicio 2.5
+
+La transacción de autorización no se puede reconstruir desde cookies ni desde
+parámetros recibidos por el navegador. El core crea una intención durable,
+ligada al identificador de sesión del navegador y al correlation ID. El
+adaptador la cifra en cache, la recupera únicamente para validar la respuesta y
+la consume mediante lock antes del intercambio de código.
+
+No use `array`, `file` ni un cache local por proceso en producción: varios
+workers perderían la intención o no podrían proteger el consumo simultáneo.
+Use Redis u otro store compartido de Laravel con locks atómicos, y configure un
+TTL de lock entre 1 y 30 segundos. Si el store no satisface ese contrato, el
+boot de producción falla cerrado.
 
 ## Refresh, revocación e introspección
 
@@ -146,7 +166,7 @@ Las operaciones administrativas no pertenecen al SDK de relying party.
 
 ## Estado
 
-Identity SDK 2.0 y este adaptador tienen releases estables para integración. Los
-gates del paquete prueban el contrato local, pero no equivalen a certificación
-OpenID, staging ni readiness productiva del servidor Identity. Consulte
-`COMPATIBILITY.md`, `SECURITY.md` y `UPGRADING.md`.
+La integración 2.5 requiere releases estables y compatibles tanto del núcleo
+como de este adaptador. Los gates del paquete prueban el contrato local, pero
+no equivalen a certificación OpenID, staging ni readiness productiva del
+servidor Identity. Consulte `COMPATIBILITY.md`, `SECURITY.md` y `UPGRADING.md`.

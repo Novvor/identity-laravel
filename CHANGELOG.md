@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Prepared the adapter for `novvor/identity-sdk-php:^2.5`.
+- Moved authorization intents, PKCE verifiers and DPoP private material from
+  the browser session to encrypted server-side Laravel cache entries.
+- Added atomic one-time consumption for authorization intents and DPoP
+  material, including bounded lock configuration and production fail-closed
+  cache validation.
+- Kept only opaque, bounded intent handles in browser sessions and removed the
+  legacy in-session transaction payload on a new authorization attempt.
+
 ## 2.0.0 (unreleased)
 
 - Renamed the Laravel adapter to `novvor/identity-laravel`.

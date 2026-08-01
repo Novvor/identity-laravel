@@ -12,3 +12,23 @@
 
 There is no transparent compatibility mode because 2.0 intentionally removes
 unsafe fallback behavior.
+
+# Upgrading from 2.0 to 2.5
+
+1. Upgrade the core and adapter together after their stable 2.5 releases are
+   available:
+
+   ```bash
+   composer require novvor/identity-laravel:^2.5 novvor/identity-sdk-php:^2.5
+   ```
+
+2. Configure `IDENTITY_OIDC_INTENT_CACHE_STORE` to a shared Laravel cache store
+   with atomic locks (normally Redis) and set `IDENTITY_OIDC_INTENT_LOCK_SECONDS`
+   between 1 and 30.
+3. Do not store a transaction, PKCE verifier, `state`, `nonce` or DPoP private
+   material in the browser session. The 2.5 manager stores only opaque handles
+   there and fails closed when its server-side intent cannot be recovered.
+4. Test two concurrent callbacks for the same authorization response: exactly
+   one must reach token exchange.
+5. Deploy the cache configuration before enabling the new adapter version on
+   every web and worker process.
