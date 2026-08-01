@@ -3,6 +3,8 @@
 namespace Novvor\Identity;
 
 use GuzzleHttp\Client;
+use Illuminate\Contracts\Cache\Factory as CacheFactory;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\ServiceProvider;
 use Novvor\Identity\Auth\IdentityErrorSurfaceRedirector;
 use Novvor\Identity\Contracts\IdentitySessionMapperInterface;
@@ -10,6 +12,8 @@ use Novvor\Identity\Contracts\IdentityTokenValidationPolicyInterface;
 use Novvor\Identity\Jwt\IdentityTokenValidationPolicy;
 use Novvor\Identity\Jwt\JwtVerifier;
 use Novvor\Identity\Oidc\IdentityAuthorizationManager;
+use Novvor\Identity\Oidc\LaravelCacheLoginIntentStore;
+use Novvor\Identity\Oidc\LaravelDpopIntentMaterialStore;
 use Novvor\Identity\Session\IdentitySessionMapper;
 use Novvor\Identity\Sso\SsoExchangeClient;
 use Novvor\IdentitySdk\Oidc\AuthorizationCodeClient;
@@ -18,6 +22,8 @@ use Novvor\IdentitySdk\Oidc\AuthorizationResponseProcessor;
 use Novvor\IdentitySdk\Oidc\EnterpriseProfileValidator;
 use Novvor\IdentitySdk\Oidc\IdTokenValidator;
 use Novvor\IdentitySdk\Oidc\JarmAuthorizationResponseValidator;
+use Novvor\IdentitySdk\Oidc\LoginIntentManager;
+use Novvor\IdentitySdk\Oidc\LoginIntentStore;
 use Novvor\IdentitySdk\Oidc\OidcClientConfiguration;
 use Novvor\IdentitySdk\Oidc\OidcDiscoveryClient;
 use Novvor\IdentitySdk\Oidc\PushedAuthorizationClient;
@@ -69,6 +75,25 @@ final class IdentityServiceProvider extends ServiceProvider
         $this->app->singleton(TokenRevocationClient::class, fn ($app): TokenRevocationClient => new TokenRevocationClient($app->make(Client::class)));
         $this->app->singleton(IdTokenValidator::class, fn ($app): IdTokenValidator => new IdTokenValidator($app->make(Client::class)));
         $this->app->singleton(EnterpriseProfileValidator::class);
+        $this->app->singleton(LaravelCacheLoginIntentStore::class, function ($app): LaravelCacheLoginIntentStore {
+            return new LaravelCacheLoginIntentStore(
+                cache: $this->oidcIntentCache($app->make(CacheFactory::class)),
+                encrypter: $app->make('encrypter'),
+                lockSeconds: (int) config('identity.oidc.intent_lock_seconds', 5),
+            );
+        });
+        $this->app->alias(LaravelCacheLoginIntentStore::class, LoginIntentStore::class);
+        $this->app->singleton(LoginIntentManager::class, fn ($app): LoginIntentManager => new LoginIntentManager(
+            $app->make(LoginIntentStore::class),
+            (int) config('identity.oidc.transaction_ttl_seconds', 600),
+        ));
+        $this->app->singleton(LaravelDpopIntentMaterialStore::class, function ($app): LaravelDpopIntentMaterialStore {
+            return new LaravelDpopIntentMaterialStore(
+                cache: $this->oidcIntentCache($app->make(CacheFactory::class)),
+                encrypter: $app->make('encrypter'),
+                lockSeconds: (int) config('identity.oidc.intent_lock_seconds', 5),
+            );
+        });
         $this->app->singleton(IdentityAuthorizationManager::class, fn ($app): IdentityAuthorizationManager => new IdentityAuthorizationManager(
             configuration: $app->make(OidcClientConfiguration::class),
             discoveryClient: $app->make(OidcDiscoveryClient::class),
@@ -79,8 +104,9 @@ final class IdentityServiceProvider extends ServiceProvider
             codes: $app->make(AuthorizationCodeClient::class),
             idTokens: $app->make(IdTokenValidator::class),
             userInfo: $app->make(UserInfoClient::class),
-            encrypter: $app->make('encrypter'),
-            transactionTtlSeconds: (int) config('identity.oidc.transaction_ttl_seconds', 600),
+            intents: $app->make(LoginIntentManager::class),
+            intentStore: $app->make(LoginIntentStore::class),
+            dpopMaterials: $app->make(LaravelDpopIntentMaterialStore::class),
             maxPendingTransactions: (int) config('identity.oidc.max_pending_transactions', 5),
         ));
 
@@ -131,6 +157,7 @@ final class IdentityServiceProvider extends ServiceProvider
             && $this->app->environment('production')) {
             $configuration = $this->app->make(OidcClientConfiguration::class);
             (new OidcConfigurationFactory())->assertProductionSafe($configuration);
+            $this->app->make(LaravelCacheLoginIntentStore::class);
         }
 
         if ($this->app->runningInConsole()) {
@@ -138,5 +165,17 @@ final class IdentityServiceProvider extends ServiceProvider
                 __DIR__.'/../config/identity.php' => config_path('identity.php'),
             ], 'novvor-identity-config');
         }
+    }
+
+    private function oidcIntentCache(CacheFactory $cacheFactory): CacheRepository
+    {
+        $store = config('identity.oidc.intent_cache_store');
+        if ($this->app->environment('production') && (! is_string($store) || $store === '')) {
+            throw new \RuntimeException('IDENTITY_OIDC_INTENT_CACHE_STORE is required in production.');
+        }
+
+        return is_string($store) && $store !== ''
+            ? $cacheFactory->store($store)
+            : $cacheFactory->store();
     }
 }

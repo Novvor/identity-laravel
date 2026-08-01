@@ -6,16 +6,21 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Cache\Repository;
 use Illuminate\Encryption\Encrypter;
 use Illuminate\Session\ArraySessionHandler;
 use Illuminate\Session\Store;
 use Novvor\Identity\Oidc\IdentityAuthorizationManager;
+use Novvor\Identity\Oidc\LaravelCacheLoginIntentStore;
+use Novvor\Identity\Oidc\LaravelDpopIntentMaterialStore;
 use Novvor\IdentitySdk\Oidc\AuthorizationCodeClient;
 use Novvor\IdentitySdk\Oidc\AuthorizationRequestFactory;
 use Novvor\IdentitySdk\Oidc\AuthorizationResponseProcessor;
 use Novvor\IdentitySdk\Oidc\EnterpriseProfileValidator;
 use Novvor\IdentitySdk\Oidc\IdTokenValidator;
 use Novvor\IdentitySdk\Oidc\JarmAuthorizationResponseValidator;
+use Novvor\IdentitySdk\Oidc\LoginIntentManager;
 use Novvor\IdentitySdk\Oidc\OidcClientConfiguration;
 use Novvor\IdentitySdk\Oidc\OidcDiscoveryClient;
 use Novvor\IdentitySdk\Oidc\OidcException;
@@ -25,7 +30,7 @@ use PHPUnit\Framework\TestCase;
 
 final class IdentityAuthorizationManagerTest extends TestCase
 {
-    public function test_standard_flow_stores_multiple_one_time_transactions_encrypted(): void
+    public function test_standard_flow_keeps_only_opaque_intent_handles_in_browser_session(): void
     {
         $manager = $this->manager([
             $this->discovery(),
@@ -38,10 +43,14 @@ final class IdentityAuthorizationManagerTest extends TestCase
 
         self::assertStringStartsWith('https://identity.example.com/oauth/authorize?', $first);
         self::assertNotSame($first, $second);
-        $stored = (string) $session->get('_novvor_identity_oidc_transactions_v2');
-        self::assertNotSame('', $stored);
-        self::assertStringNotContainsString('code_verifier', $stored);
-        self::assertStringNotContainsString('correlation-1', $stored);
+        $handles = $session->get('_novvor_identity_oidc_intent_handles_v25');
+        self::assertIsArray($handles);
+        self::assertCount(2, $handles);
+        foreach ($handles as $handle) {
+            self::assertIsString($handle);
+            self::assertMatchesRegularExpression('/^[A-Za-z0-9_-]{43,128}$/', $handle);
+        }
+        self::assertNull($session->get('_novvor_identity_oidc_transactions_v2'));
     }
 
     public function test_high_assurance_flow_uses_par_and_never_leaks_parameters_to_browser_url(): void
@@ -96,6 +105,10 @@ final class IdentityAuthorizationManagerTest extends TestCase
         );
         $jarm = new JarmAuthorizationResponseValidator($http);
 
+        $cache = new Repository(new ArrayStore());
+        $encrypter = new Encrypter(random_bytes(32), 'AES-256-GCM');
+        $intentStore = new LaravelCacheLoginIntentStore($cache, $encrypter);
+
         return new IdentityAuthorizationManager(
             configuration: $configuration,
             discoveryClient: new OidcDiscoveryClient($http),
@@ -106,7 +119,9 @@ final class IdentityAuthorizationManagerTest extends TestCase
             codes: new AuthorizationCodeClient($http),
             idTokens: new IdTokenValidator($http),
             userInfo: new UserInfoClient($http),
-            encrypter: new Encrypter(random_bytes(32), 'AES-256-GCM'),
+            intents: new LoginIntentManager($intentStore),
+            intentStore: $intentStore,
+            dpopMaterials: new LaravelDpopIntentMaterialStore($cache, $encrypter),
         );
     }
 

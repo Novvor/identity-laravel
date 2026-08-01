@@ -7,13 +7,14 @@
   "require": {
     "php": "^8.2",
     "guzzlehttp/guzzle": "^7.0",
-    "novvor/identity-sdk-php": "^2.0",
+    "novvor/identity-sdk-php": "^2.5",
     "psr/simple-cache": "^3.0",
     "illuminate/contracts": "^12.0|^13.0",
     "illuminate/encryption": "^12.0|^13.0",
     "illuminate/http": "^12.0|^13.0",
     "illuminate/session": "^12.0|^13.0",
-    "illuminate/support": "^12.0|^13.0"
+    "illuminate/support": "^12.0|^13.0",
+    "illuminate/cache": "^12.0|^13.0"
   },
   "require-dev": {
     "phpstan/phpstan": "^2.1",
