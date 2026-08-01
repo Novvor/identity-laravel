@@ -10,6 +10,12 @@
   cache validation.
 - Kept only opaque, bounded intent handles in browser sessions and removed the
   legacy in-session transaction payload on a new authorization attempt.
+- Added an explicit authorization-start result so relying parties can persist
+  only opaque transaction correlation context; PKCE verifier and nonce remain
+  server-side and never enter application persistence or redirects.
+- Included the consumed transaction context in the completed authorization
+  result, enabling durable callback reconciliation without reconstructing OIDC
+  protocol state in each application.
 
 ## 2.0.0 (unreleased)
 

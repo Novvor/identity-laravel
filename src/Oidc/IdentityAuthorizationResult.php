@@ -16,6 +16,12 @@ final readonly class IdentityAuthorizationResult
         public array $idTokenClaims,
         public ?UserInfoResponse $userInfo,
         public ?DpopKey $dpopKey,
+        // Defaults preserve the constructor contract for relying parties that
+        // instantiate this DTO in tests or adapters. Manager-produced results
+        // always carry the server-side transaction context.
+        public string $intentHandle = '',
+        public string $returnPath = '/',
+        public string $correlationId = '',
     ) {
     }
 }

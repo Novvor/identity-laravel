@@ -59,6 +59,16 @@ final class IdentityAuthorizationManager
         ?int $maxAge = null,
         string $returnPath = '/',
     ): string {
+        return $this->beginTransaction($session, $correlationId, $requiredAcr, $maxAge, $returnPath)->authorizationUrl;
+    }
+
+    public function beginTransaction(
+        Session $session,
+        ?string $correlationId = null,
+        ?string $requiredAcr = null,
+        ?int $maxAge = null,
+        string $returnPath = '/',
+    ): IdentityAuthorizationStart {
         $correlationId ??= bin2hex(random_bytes(16));
         $discovery = $this->verifiedDiscovery($correlationId);
         $transaction = $this->requests->transaction($this->configuration, $requiredAcr, $maxAge);
@@ -91,10 +101,22 @@ final class IdentityAuthorizationManager
                 }
                 $pushed = $this->par->push($this->configuration, $transaction, $endpoint, $correlationId);
 
-                return $this->requests->pushedAuthorizationUrl($this->configuration, $pushed->requestUri);
+                return new IdentityAuthorizationStart(
+                    $this->requests->pushedAuthorizationUrl($this->configuration, $pushed->requestUri),
+                    $intent->handle,
+                    $intent->expiresAt,
+                    $intent->correlationId,
+                    $intent->returnPath,
+                );
             }
 
-            return $this->configuration->authorizationEndpoint.'?'.http_build_query($transaction->parameters);
+            return new IdentityAuthorizationStart(
+                $this->configuration->authorizationEndpoint.'?'.http_build_query($transaction->parameters),
+                $intent->handle,
+                $intent->expiresAt,
+                $intent->correlationId,
+                $intent->returnPath,
+            );
         } catch (Throwable $exception) {
             $this->discard($session, $intent->handle);
 
@@ -191,7 +213,15 @@ final class IdentityAuthorizationManager
                 $dpopKey,
             );
 
-        return new IdentityAuthorizationResult($tokens, $claims, $userInfo, $dpopKey);
+        return new IdentityAuthorizationResult(
+            $tokens,
+            $claims,
+            $userInfo,
+            $dpopKey,
+            $intent->handle,
+            $intent->returnPath,
+            $intent->correlationId,
+        );
     }
 
     private function verifiedDiscovery(?string $correlationId): OidcDiscoveryDocument

@@ -53,6 +53,29 @@ final class IdentityAuthorizationManagerTest extends TestCase
         self::assertNull($session->get('_novvor_identity_oidc_transactions_v2'));
     }
 
+    public function test_start_exposes_only_opaque_context_for_relying_party_correlation(): void
+    {
+        $manager = $this->manager([$this->discovery()]);
+        $session = $this->session();
+
+        $start = $manager->beginTransaction($session, 'correlation-1', returnPath: '/admin-center');
+
+        self::assertStringStartsWith('https://identity.example.com/oauth/authorize?', $start->authorizationUrl);
+        self::assertMatchesRegularExpression('/^[A-Za-z0-9_-]{43,128}$/', $start->intentHandle);
+        self::assertSame('correlation-1', $start->correlationId);
+        self::assertSame('/admin-center', $start->returnPath);
+        self::assertStringNotContainsString($start->intentHandle, $start->authorizationUrl);
+        $context = json_encode([
+            'intent_handle' => $start->intentHandle,
+            'expires_at' => $start->expiresAt,
+            'correlation_id' => $start->correlationId,
+            'return_path' => $start->returnPath,
+        ], JSON_THROW_ON_ERROR);
+
+        self::assertStringNotContainsString('code_verifier', $context);
+        self::assertStringNotContainsString('nonce', $context);
+    }
+
     public function test_high_assurance_flow_uses_par_and_never_leaks_parameters_to_browser_url(): void
     {
         $manager = $this->manager([
